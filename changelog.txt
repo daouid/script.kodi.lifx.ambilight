@@ -1,3 +1,6 @@
+1.0.8 (2019-01-13)
+- fix - Newest lifxlan to allow beam to be discovered
+
 1.0.7 (2019-01-01)
 - fix - lights don't dim on initial playback
 
