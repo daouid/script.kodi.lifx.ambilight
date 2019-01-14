@@ -200,6 +200,169 @@ class Light(object):
             xbmclog("{}.__repr__() - light={} - Exception - {}".format(self.__class__.__name__, self.name, str(err)))
         return s
 
+    def len(self):
+        return 1
+
+class MZLight(Light):
+
+    def __init__(self, light):
+        super(MZLight, self).__init__(light)
+        self.color_zones = self.light.get_color_zones()
+        self.num_zones = len(self.color_zones)
+
+        self.init_hue = [c[0] for c in self.color_zones]
+        self.hue = self.init_hue
+        self.init_sat = [int(c[1]*255/65535) for c in self.color_zones]
+        self.sat = self.init_sat
+
+        self.init_bri = [int(c[2]*255/65535) for c in self.color_zones]
+        self.bri = self.init_bri
+
+        self.init_kel = [c[3] for c in self.color_zones]
+        self.kel = self.init_kel
+
+        xbmclog("Added light={}".format(self))
+
+    def len(self):
+        return self.num_zones
+
+    def set_state(self, hue=None, sat=None, bri=None, kel=None, on=None,
+                  transition_time=None):
+
+        def handle_single(e):
+            if isinstance(e, list):
+                return e
+            else:
+                return [e] * self.num_zones
+
+        hue = [0] * self.num_zones if hue is None else handle_single(hue)
+        sat = [0] * self.num_zones if sat is None else handle_single(sat)
+        bri = [0] * self.num_zones if bri is None else handle_single(bri)
+        kel = [3500] * self.num_zones if kel is None else handle_single(kel)
+        # NOTE: From https://github.com/mclarkk/lifxlan -
+        #   rapid is True/False. If True, don't wait for successful confirmation, just send multiple packets and move on
+        #   rapid is meant for super-fast light shows with lots of changes.
+        state = {
+            'hue' : self.hue,
+            'sat' : self.sat,
+            'bri' : self.bri,
+            'kel' : self.kel,
+            'on' : None,
+            'transitiontime' : 0,
+            'rapid' : False
+        }
+
+
+        xbmclog('set_state() - light={} - requested_state: HSBK=[{}, {}, {}, {}] on={} transition_time={})'.format(self.name, hue, sat, bri, kel, on, transition_time))
+        xbmclog("set_state() - light={} - current_state: HSBK=[{}, {}, {}, {}] on={}".format(self.name, self.hue, self.sat, self.bri, self.kel, self.on))
+
+        # reset `hue` and `sat` if light doesn't support color
+        if not self.supports_color:
+            hue = self.init_hue
+            sat = self.init_sat
+
+        # reset `kel` if light doesn't support temperature
+        if not self.supports_temperature:
+            kel = self.init_kel
+
+        if transition_time is not None:
+            state['transitiontime'] = transition_time
+            # transition_time less than 1 second => set rapid = True
+            state['rapid'] = True if transition_time < 1/100 else False
+        if hue is not None and hue != self.hue:
+            self.hue = hue
+            state['hue'] = hue
+        if sat is not None and sat != self.sat:
+            self.sat = sat
+            state['sat'] = sat
+
+            # Use initial Kel values if `sat` == 0 and `kel` == None
+            kel = self.init_kel if kel is None else [
+                ik if k is None and s == 0 else k
+                for k, s, ik in zip(kel, sat, self.init_kel)
+            ]
+
+            # Override `kel` to neutral if `sat` > 0
+            kel = [3500 if s > 0 else k for k, s in zip(kel, sat)]
+
+        if bri is not None and bri != self.bri:
+            self.bri = bri
+            state['bri'] = bri
+
+            # Turn the light on or off based on `bri` value
+            # No need to turn the power off, just setting the bri=0 should turn the light "off", but keep the power=on
+            # if bri <= 0 and self.on and on is None:
+            #     on = False
+            if any([b >= 1 for b in bri]) and not self.on and on is None:
+                on = True
+
+        if kel is not None and self.supports_temperature and kel != self.kel:
+            self.kel = kel
+            state['kel'] = kel
+
+            # if `kel` is not neutral, reset `hue`, `sat` to initial values
+            self.hue = [ih if k != 3500 else h for k, h, ih in zip(kel, hue, self.init_hue)]
+            self.sat = [isa if k != 3500 else sa for k, sa, isa in zip(kel, sat, self.init_sat)]
+            state['hue'] = self.init_hue
+            state['sat'] = self.init_sat
+
+        if on is not None and on != self.on:
+            self.on = on
+            state['on'] = on
+
+        xbmclog('set_state() - light={} - final_state={})'.format(self.name, state))
+
+        # Set power state
+        if state['on'] != None:
+            try:
+                self.light.set_power(state['on'], rapid=False)
+            except WorkflowException as error:
+                errStrings = ga.formatException()
+                ga.sendExceptionData(errStrings[0])
+                ga.sendEventData("Exception", errStrings[0], errStrings[1])
+                xbmclog("set_state() - set_power({}) - Exception - {}".format(state['on'], str(error)))
+
+        # Set color state
+        try:
+            # NOTE:
+            #   Lifx color is a list of HSBK values: [hue (0-65535), saturation (0-65535), brightness (0-65535), Kelvin (2500-9000)]
+            #   65535/255 = 257
+            color = [
+                [int(h),int(s*257),int(b*257),int(k)]
+                for h, s, b, k
+                in zip(state['hue'], state['sat'], state['bri'], state['kel'])
+            ]
+            # xbmclog('set_state() - light={} - color={})'.format(self.name, color))
+            # color_log = [int(data["hue"]*360/65535),int(data["sat"]*100/255),int(data["bri"]*100/255),int(data["kel"])]
+            # self.logger.debuglog("set_light2: %s: %s  (%s ms)" % (self.light.get_label(), color_log, data["transitiontime"]*self.multiplier))
+
+            # NOTE:
+            #   Lifxlan duration is in miliseconds, for hue it's multiple of 100ms - https://developers.meethue.com/documentation/lights-api#16_set_light_state
+            self.light.set_zone_colors(color, state['transitiontime']*100, rapid=state['rapid'])
+        except WorkflowException as error:
+            errStrings = ga.formatException()
+            ga.sendExceptionData(errStrings[0])
+            ga.sendEventData("Exception", errStrings[0], errStrings[1])
+            xbmclog("set_color() - light={} - failed to set_color({}) - Exception - {}".format(self.name, color, str(error)))
+
+    def restore_initial_state(self, transition_time=0):
+        self.set_state(
+            self.init_hue,
+            self.init_sat,
+            self.init_bri,
+            self.init_kel,
+            self.init_on,
+            transition_time
+        )
+
+    def save_state_as_initial(self):
+        self.init_hue = self.hue
+        self.init_sat = self.sat
+        self.init_bri = self.bri
+        self.init_kel = self.kel
+        self.init_on = self.on
+
+
 class Controller(object):
 
     def __init__(self, lights, settings):
@@ -208,7 +371,7 @@ class Controller(object):
 
         for light_id, lifx_light in lights.items():
             try:
-                new_light = Light(lifx_light)
+                new_light = Light(lifx_light) if not lifx_light.supports_multizone() else MZLight(lifx_light)
                 self.lights[light_id] = new_light
             except WorkflowException as error:
                 errStrings = ga.formatException()
@@ -232,6 +395,9 @@ class Controller(object):
         raise NotImplementedError(
             'on_playback_stop must be implemented in the controller'
         )
+
+    def len(self):
+        return sum([self.lights[k].len() for k in self.lights])
 
     def set_state(self, hue=None, sat=None, bri=None, kel=None, on=None,
                   transition_time=None, lights=None, force_on=None):
@@ -329,8 +495,14 @@ class Controller(object):
     def _transition_time(self, light, bri):
         time = 0
 
-        difference = abs(float(bri) - light.bri)
-        total = abs(float(light.init_bri) - self.settings.theater_start_bri)
+        def handle_list(v):
+            if isinstance(v, list):
+                return max(v)
+            else:
+                return v
+
+        difference = abs(float(handle_list(bri)) - handle_list(light.bri))
+        total = abs(float(handle_list(light.init_bri)) - self.settings.theater_start_bri)
         if total <= 0:
             return self.settings.dim_time
         proportion = difference / total

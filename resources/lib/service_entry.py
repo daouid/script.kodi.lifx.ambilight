@@ -204,6 +204,7 @@ class Service(object):
             self.static_controller.on_playback_stop()
 
     def run(self):
+        old_pixels = []
         while not self.monitor.abortRequested():
             if len(self.ambilight_controller.lights) and not ev.is_set():
                 startReadOut = False
@@ -220,6 +221,9 @@ class Service(object):
                     try:
                         pixels = capture.getImage(200)
                         if len(pixels) > 0:
+                            xbmclog('Had Pixels {}'.format(len(pixels)))
+                            if pixels != old_pixels:
+                                xbmclog('Pixels changed')
                             screen = image.Screenshot(
                                 pixels)
                             hsv_ratios = screen.spectrum_hsv(
@@ -228,11 +232,22 @@ class Service(object):
                                 self.settings.ambilight_threshold_saturation,
                                 self.settings.color_variation,
                                 self.settings.color_bias,
-                                len(self.ambilight_controller.lights)
+                                self.ambilight_controller.len()
                             )
+                            acc = 0
                             for i in range(len(self.ambilight_controller.lights)):
-                                algorithm.transition_colorspace(
-                                    self, self.ambilight_controller.lights.values()[i], hsv_ratios[i], )
+                                light = self.ambilight_controller.lights.values()[i]
+                                acc_end = acc + light.len()
+                                if light.supports_multizone:
+                                    algorithm.transition_colorspacen(
+                                        self, light, hsv_ratios[acc:acc_end], )
+                                else:
+                                    algorithm.transition_colorspace(
+                                        self, light, hsv_ratios[acc], )
+                                acc = acc_end
+                            old_pixels = pixels
+                        else:
+                            xbmclog('No Pixels')
                     except ZeroDivisionError:
                         pass
             # Sleep for 0.1s

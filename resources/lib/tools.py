@@ -15,11 +15,12 @@ except ImportError:
     TESTING_ENV = True
 
 
-def xbmclog(message):
+def xbmclog(message, level=None):
     if TESTING_ENV:
         pass
     else:
-        xbmc.log("Kodi Lifx: %s" % message)
+        level = xbmc.LOGDEBUG if level is None else level
+        xbmc.log("Kodi Lifx: %s" % message, level=level)
 
 def notify(title, msg=''):
     if TESTING_ENV:
