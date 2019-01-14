@@ -18,6 +18,13 @@ class Player(xbmc.Player):
 
     def onAVStarted(self):
         xbmclog('In KodiPlayer.onAVStarted()')
+        self._start()
+
+    def onPlayBackStarted(self):
+        xbmclog('In KodiPlayer.onPlayBackStarted()')
+        self._start()
+
+    def _start(self):
         if self.isPlayingVideo():
             self.playingvideo = True
             self.duration = self.getTotalTime()
