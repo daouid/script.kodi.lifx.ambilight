@@ -27,11 +27,12 @@ from .errors import WorkflowException
 from .msgtypes import Acknowledgement, GetGroup, GetHostFirmware, GetInfo, GetLabel, GetLocation, GetPower, GetVersion, \
     GetWifiFirmware, GetWifiInfo, SERVICE_IDS, SetLabel, SetPower, StateGroup, StateHostFirmware, StateInfo, StateLabel, \
     StateLocation, StatePower, StateVersion, StateWifiFirmware, StateWifiInfo, str_map
+from .message import BROADCAST_MAC
 from .products import features_map, product_map, light_products
 from .unpack import unpack_lifx_message
 
 DEFAULT_TIMEOUT = 1 #second
-DEFAULT_ATTEMPTS = 5
+DEFAULT_ATTEMPTS = 1
 
 VERBOSE = False
 
@@ -108,6 +109,11 @@ class Device(object):
         # uptime
         # downtime
 
+        # The following attributes are used for handling multithreading requests
+
+        self.socket_counter = 0
+        self.socket_table = {}
+
 
     ############################################################################
     #                                                                          #
@@ -145,26 +151,19 @@ class Device(object):
     def get_label(self):
         try:
             response = self.req_with_resp(GetLabel, StateLabel)
-            self.label = response.label
+            self.label = response.label.encode('utf-8')
+            if type(self.label).__name__ == 'bytes': # Python 3
+                self.label = self.label.decode('utf-8')
         except:
             raise
         return self.label
 
-    def get_label(self):
-         try:
-             response = self.req_with_resp(GetLabel, StateLabel)
-         except:
-             return self.label
-         try:
-             self.label = response.label
-         except:
-            raise
-         return self.label
-
     def get_location(self):
         try:
             response = self.req_with_resp(GetLocation, StateLocation)
-            self.location = response.label
+            self.location = response.label.encode('utf-8')
+            if type(self.location).__name__ == 'bytes': # Python 3
+                self.location = self.location.decode('utf-8')
         except:
             raise
         return self.location
@@ -172,7 +171,9 @@ class Device(object):
     def get_group(self):
         try:
             response = self.req_with_resp(GetGroup, StateGroup)
-            self.group = response.label
+            self.group = response.label.encode('utf-8')
+            if type(self.group).__name__ == 'bytes': # Python 3
+                self.group = self.group.decode('utf-8')
         except:
             raise
         return self.group
@@ -283,7 +284,7 @@ class Device(object):
         if self.product == None:
             self.vendor, self.product, self.version = self.get_version_tuple()
         if self.product in product_map:
-            product_name = product_map[self.product]
+            product_name = product_map[self.product]['name']
         return product_name
 
     def get_product_features(self):
@@ -394,6 +395,11 @@ class Device(object):
             self.product_features = self.get_product_features()
         return self.product_features['infrared']
 
+    def supports_chain(self):
+        if self.product_features == None:
+            self.product_features = self.get_product_features()
+        return self.product_features['chain']
+
     ############################################################################
     #                                                                          #
     #                            String Formatting                             #
@@ -464,21 +470,22 @@ class Device(object):
 
     # Don't wait for Acks or Responses, just send the same message repeatedly as fast as possible
     def fire_and_forget(self, msg_type, payload={}, timeout_secs=DEFAULT_TIMEOUT, num_repeats=DEFAULT_ATTEMPTS):
-        self.initialize_socket(timeout_secs)
+        socket_id = self.initialize_socket(timeout_secs)
+        sock = self.socket_table[socket_id]
         msg = msg_type(self.mac_addr, self.source_id, seq_num=0, payload=payload, ack_requested=False, response_requested=False)
         sent_msg_count = 0
         sleep_interval = 0.05 if num_repeats > 20 else 0
         while(sent_msg_count < num_repeats):
             if self.ip_addr:
-                self.sock.sendto(msg.packed_message, (self.ip_addr, self.port))
+                sock.sendto(msg.packed_message, (self.ip_addr, self.port))
             else:
                 for ip_addr in UDP_BROADCAST_IP_ADDRS:
-                    self.sock.sendto(msg.packed_message, (ip_addr, self.port))
+                    sock.sendto(msg.packed_message, (ip_addr, self.port))
             if self.verbose:
                 print("SEND: " + str(msg))
             sent_msg_count += 1
             sleep(sleep_interval) # Max num of messages device can handle is 20 per second.
-        self.close_socket()
+        self.close_socket(socket_id)
 
     # Usually used for Set messages
     def req_with_ack(self, msg_type, payload, timeout_secs=DEFAULT_TIMEOUT, max_attempts=DEFAULT_ATTEMPTS):
@@ -491,7 +498,8 @@ class Device(object):
             response_type = [response_type]
         success = False
         device_response = None
-        self.initialize_socket(timeout_secs)
+        socket_id = self.initialize_socket(timeout_secs)
+        sock = self.socket_table[socket_id]
         if len(response_type) == 1 and Acknowledgement in response_type:
             msg = msg_type(self.mac_addr, self.source_id, seq_num=0, payload=payload, ack_requested=True, response_requested=False)
         else:
@@ -505,20 +513,20 @@ class Device(object):
             while not response_seen and not timedout:
                 if not sent:
                     if self.ip_addr:
-                        self.sock.sendto(msg.packed_message, (self.ip_addr, self.port))
+                        sock.sendto(msg.packed_message, (self.ip_addr, self.port))
                     else:
                         for ip_addr in UDP_BROADCAST_IP_ADDRS:
-                            self.sock.sendto(msg.packed_message, (ip_addr, self.port))
+                            sock.sendto(msg.packed_message, (ip_addr, self.port))
                     sent = True
                     if self.verbose:
                         print("SEND: " + str(msg))
                 try:
-                    data, (ip_addr, port) = self.sock.recvfrom(1024)
+                    data, (ip_addr, port) = sock.recvfrom(1024)
                     response = unpack_lifx_message(data)
                     if self.verbose:
                         print("RECV: " + str(response))
                     if type(response) in response_type:
-                        if response.source_id == self.source_id and response.target_addr == self.mac_addr:
+                        if response.source_id == self.source_id and (response.target_addr == self.mac_addr or response.target_addr == BROADCAST_MAC):
                             response_seen = True
                             device_response = response
                             self.ip_addr = ip_addr
@@ -529,10 +537,10 @@ class Device(object):
                 timedout = True if elapsed_time > timeout_secs else False
             attempts += 1
         if not success:
-            self.close_socket()
+            self.close_socket(socket_id)
             raise WorkflowException("WorkflowException: Did not receive {} from {} (Name: {}) in response to {}".format(str(response_type), str(self.mac_addr), str(self.label), str(msg_type)))
         else:
-            self.close_socket()
+            self.close_socket(socket_id)
         return device_response
 
     # Not currently implemented, although the LIFX LAN protocol supports this kind of workflow natively
@@ -546,17 +554,23 @@ class Device(object):
     ############################################################################
 
     def initialize_socket(self, timeout):
-        self.sock = socket(AF_INET, SOCK_DGRAM)
-        self.sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-        self.sock.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
-        self.sock.settimeout(timeout)
+        sock = socket(AF_INET, SOCK_DGRAM)
+        sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+        sock.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
+        sock.settimeout(timeout)
         try:
-            self.sock.bind(("", 0))  # allow OS to assign next available source port
+            sock.bind(("", 0))  # allow OS to assign next available source port
+            socket_id = self.socket_counter
+            self.socket_table[socket_id] = sock
+            self.socket_counter += 1
+            return socket_id
         except Exception as err:
             raise WorkflowException("WorkflowException: error {} while trying to open socket".format(str(err)))
 
-    def close_socket(self):
-        self.sock.close()
+    def close_socket(self, socket_id):
+        sock = self.socket_table.pop(socket_id, None)
+        if sock != None:
+            sock.close()
 
 ################################################################################
 #                                                                              #
