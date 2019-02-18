@@ -254,11 +254,11 @@ class Controller(object):
             if not force_on and not light.init_on:
                 continue
 
-            if bri:
-                if self.settings.proportional_dim_time:
-                    transition_time = self._transition_time(light, bri)
-                else:
-                    transition_time = self.settings.dim_time
+            #if bri is not None:
+            if self.settings.proportional_dim_time:
+                transition_time = self._transition_time(light, bri)
+            else:
+                transition_time = self.settings.dim_time
 
             light.set_state(
                 hue=hue, sat=sat, bri=bri, kel=kel, on=on,
