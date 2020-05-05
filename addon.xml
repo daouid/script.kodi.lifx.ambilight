@@ -42,6 +42,7 @@
             <screenshot>resources/screenshot-06.png</screenshot>
             <screenshot>resources/screenshot-07.png</screenshot>
         </assets>
+    </extension>
     <extension point="xbmc.addon.repository" name="Daouid's Add-On Repository">
         <info compressed="false">https://raw.github.com/daouid/repository.kodi.hps/master/addons.xml</info>
         <checksum>https://raw.github.com/daouid/repository.kodi.hps/master/addons.xml.md5</checksum>
