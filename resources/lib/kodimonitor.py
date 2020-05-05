@@ -1,5 +1,6 @@
 import xbmc
 
+import os
 import ui
 import clientinfo
 
